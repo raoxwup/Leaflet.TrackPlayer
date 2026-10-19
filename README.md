@@ -125,6 +125,13 @@ The preparation script reads baseline commit
 bundle is ignored by Git. In the test page, run **Original 2.0.4**, **Optimized**,
 and **Check compatibility**.
 
+The browser fixture lives under `test/__tests__/`, which Vite excludes from its
+default application entry scan. Keep it there when checking out this repository
+inside another Vite application: scanning its HTML alongside the host app can
+prebundle a second Leaflet instance and separate plugin registration from the
+Leaflet object used by the app. After moving an existing checkout, restart the
+host dev server with `--force` once to regenerate its dependency cache.
+
 One local run with 10,000 synthetic points and 120 updates measured 1,421.3 ms
 before and 672.1 ms after (about 53% less cumulative JavaScript update time).
 Both runs kept the same per-frame popup callback, with map following and marker

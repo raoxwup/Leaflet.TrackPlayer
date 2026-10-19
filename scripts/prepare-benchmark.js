@@ -10,4 +10,4 @@ const source = execFileSync(
   ],
   { cwd: new URL("..", import.meta.url) }
 );
-writeFileSync(new URL("../test/baseline.local.js", import.meta.url), source);
+writeFileSync(new URL("../test/__tests__/baseline.local.js", import.meta.url), source);
