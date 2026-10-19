@@ -89,6 +89,42 @@ track.on("progress",(progress, { lng, lat },index)=>{{
 | **notPassedLine** | L.polyline | 未行驶轨迹线段 |
 | **polylineDecorator** | L.polylineDecorator | 带箭头装饰的轨迹线段 |
 | **options** | Object | 配置选项 |
+## 回放性能与验证
+
+回放时缓存累计距离，通过二分查找定位当前轨迹段，只对当前两个点执行 Turf
+插值。已行驶、未行驶部分的坐标缓冲仅在跨过轨迹记录点时重新构建。方向箭头保留
+完整轨迹，在地图变化时重绘，不再随每次进度更新重建。暂停和移除播放器会取消
+待执行的动画帧。
+
+现有方法、配置、每帧触发的 `progress` 回调，以及公开的 `passedLine` /
+`notPassedLine` 两条折线均保留，包括各自的颜色和透明度设置。升级库后无需修改
+业务侧的回放接入代码。Leaflet 每帧仍会更新两条折线，渲染开销仍受轨迹长度和
+地图渲染器影响。
+
+使用 Node.js 18 或更新版本执行回归测试：
+
+```sh
+npm ci
+npm test
+npm run build
+```
+
+在真实浏览器中对比原始 2.0.4 和当前构建：
+
+```sh
+npm run benchmark:prepare
+npm run benchmark:serve
+```
+
+准备脚本从 Git 历史中的 `e2fabee4de627259ac94779cfce2ce67ef21a58d`
+提交读取基线构建，生成的基线文件不会提交到 Git。在测试页依次点击
+**Original 2.0.4**、**Optimized** 和 **Check compatibility**。
+
+一次本地测试中，1 万个模拟轨迹点、120 次更新的累计 JavaScript 耗时从
+1,421.3 ms 降至 672.1 ms，约减少 53%。两组使用相同的每帧弹窗回调，并关闭
+地图跟随和标记旋转。该指标只统计同步回放更新，未包含初始化及异步渲染，不能
+直接代表整个业务页或其他设备、轨迹的性能。测试页还会报告帧间隔及箭头重建次数。
+
 ## 🎉致谢与引用
 我对以下开源插件深表感谢，它们为本插件的功能提供了关键支持。
 * [turf](https://github.com/Turfjs/turf) —— 一款JavaScript编写的模块化地理空间引擎

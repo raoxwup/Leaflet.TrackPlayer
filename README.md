@@ -90,6 +90,49 @@ An array of latitude and longitude data for the trajectory, which is the same as
 |**notPassedLine**| L.polyline | The untraveled part of the trajectory line |
 |**polylineDecorator**| L.polylineDecorator | The arrowhead-decorated polyline |
 |**options**| Object | Configuration options |
+## Playback performance and validation
+
+Playback caches cumulative distances and uses binary search to locate the current
+segment. Turf interpolation runs on that two-point segment. The traveled and
+untraveled coordinate buffers are rebuilt only when the current record changes.
+Direction arrows keep the complete route and redraw on map changes instead of
+being rebuilt on every progress update. Pause and removal cancel pending
+animation frames.
+
+The existing methods, options, per-frame `progress` callback, and the two public
+`passedLine` / `notPassedLine` polylines are retained, including their independent
+colors and transparency. Applications can upgrade the library without changing
+their playback integration. Leaflet still updates both polylines each frame;
+rendering cost still depends on the route length and map renderer.
+
+Use Node.js 18 or newer to run the regression tests:
+
+```sh
+npm ci
+npm test
+npm run build
+```
+
+To compare the original 2.0.4 build with the current build in a real browser:
+
+```sh
+npm run benchmark:prepare
+npm run benchmark:serve
+```
+
+The preparation script reads baseline commit
+`e2fabee4de627259ac94779cfce2ce67ef21a58d` from Git history. The generated baseline
+bundle is ignored by Git. In the test page, run **Original 2.0.4**, **Optimized**,
+and **Check compatibility**.
+
+One local run with 10,000 synthetic points and 120 updates measured 1,421.3 ms
+before and 672.1 ms after (about 53% less cumulative JavaScript update time).
+Both runs kept the same per-frame popup callback, with map following and marker
+rotation disabled. This measures synchronous playback updates, excludes initial
+construction and asynchronous rendering, and does not predict full-page speed
+or performance on other devices and routes. The page also reports frame
+intervals and arrow rebuild counts for comparison.
+
 # 🎉Acknowledgements & References
 I gratitude to the following open-source plugins, which have provided essential support for the functionality.
 * [turf](https://github.com/Turfjs/turf) A modular geospatial engine written in JavaScript
