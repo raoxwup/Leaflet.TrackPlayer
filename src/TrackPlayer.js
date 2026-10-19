@@ -2,6 +2,7 @@ import L from "leaflet";
 import * as turf from "@turf/turf";
 import "leaflet-polylinedecorator";
 import "leaflet-rotatedmarker";
+import { TrackGeometry } from "./TrackGeometry.js";
 L.TrackPlayer = class {
   constructor(track, options = {}) {
     //格式化传入的轨迹数组，目的是传入的轨迹数组可以是任意格式（[{lng:xx,lat:xx}]/[[xx,xx]]）
@@ -9,13 +10,11 @@ L.TrackPlayer = class {
     this.track = turf.lineString(
       leafletLatlngs.map(({ lng, lat }) => [lng, lat])
     );
-    this.distanceSlice = [0];
-    const coords = this.track.geometry.coordinates;
-    this.distanceSlice = [0];
-    for (let i = 1; i < coords.length; i++) {
-      this.distanceSlice[i] = this.distanceSlice[i-1] + turf.distance(coords[i-1], coords[i]); // km
-    }
-    this.distance = this.distanceSlice[this.distanceSlice.length - 1];
+    this._geometry = new TrackGeometry(this.track.geometry.coordinates);
+    this.distanceSlice = this._geometry.distances;
+    this.distance = this._geometry.distance;
+    this._latlngs = leafletLatlngs;
+    this._renderIndex = -1;
     this.addedToMap = false;
     this.options = {
       speed: options.speed ?? 600,
@@ -100,6 +99,8 @@ L.TrackPlayer = class {
   }
   remove() {
     if (this.addedToMap) {
+      cancelAnimationFrame(this._animationFrame);
+      this._animationFrame = undefined;
       this.addedToMap = false;
       this.polylineDecorator.remove();
       this.polylineDecorator = null;
@@ -117,6 +118,9 @@ L.TrackPlayer = class {
       this.walkedDistanceTemp = 0;
       this.walkedDistance = 0;
       this.trackIndex = 0;
+      this._renderIndex = -1;
+      this._passedPath = null;
+      this._remainingPath = null;
       this.isPaused = true;
       this.options.progress = this.initProgress;
     }
@@ -144,40 +148,43 @@ L.TrackPlayer = class {
   }
   pause() {
     if (this.isPaused || this.finished) return;
+    cancelAnimationFrame(this._animationFrame);
+    this._animationFrame = undefined;
     this.pauseTimestamp = Date.now();
     this.isPaused = true;
     this.listenedEvents.pause.forEach((item) => item());
   }
   startAction() {
+    // A pause/resume or seek must not leave multiple animation loops running.
+    cancelAnimationFrame(this._animationFrame);
     //计算轨迹总长度
     let distance = this.distance;
     //开始播放轨迹
     let player = (timestamp) => {
+      this._animationFrame = undefined;
+      if (!this.addedToMap || this.isPaused || this.finished) return;
       if (timestamp&&this.addedToMap) {
         let totalDuration = (distance / this.options.speed) * 3600 * 1000; // 总体播放时间（毫秒）
         this.startTimestamp ||= timestamp; //为播放开始时的时间戳赋值
         let takeTime = timestamp - this.startTimestamp; //从播放开始到此刻时间过去了多久
-        this.walkedDistance =
+        this.walkedDistance = distance === 0 ? 0 :
           distance * (takeTime / totalDuration) + this.walkedDistanceTemp; //根据当前时间在整体时间的占比计算到下一个点位要前进多远距离
         this.playAction();
       }
      
       if (!this.isPaused && !this.finished) {
-        requestAnimationFrame(player);
+        this._animationFrame = requestAnimationFrame(player);
       }
     };
     player();
   }
   playAction(settingProgress = false) {
-    if (this.isPaused && !settingProgress) return;
+    if (!this.addedToMap || (this.isPaused && !settingProgress)) return;
     let distance = this.distance;
 
-    this.trackIndex = this.distanceSlice.findIndex((item,index,arr) => {
-      return this.walkedDistance>=item&&this.walkedDistance<(arr[index+1]??Infinity);
-    });
-
-    let [lng, lat] = turf.along(this.track, this.walkedDistance).geometry
-      .coordinates;
+    const sample = this._geometry.sample(this.walkedDistance);
+    this.trackIndex = sample.index;
+    let [lng, lat] = sample.coordinate;
     this.markerPoint = [lat, lng];
     if (this.options.panTo) {
       this.map.panTo(this.markerPoint, {
@@ -185,32 +192,38 @@ L.TrackPlayer = class {
       });
     }
     this.marker && this.marker.setLatLng(this.markerPoint);
-    //计算未经过的轨迹
+    // Only rebuild the prefix/suffix arrays when crossing a recorded point.
+    // Keep the two original polylines (and their color/overlap semantics).
+    const position = L.latLng(lat, lng);
+    const last = this._latlngs.length - 1;
+    if (this._renderIndex !== this.trackIndex) {
+      this._passedPath = this._latlngs.slice(0, this.trackIndex + 1);
+      this._remainingPath = this.trackIndex < last
+        ? [position, ...this._latlngs.slice(this.trackIndex + 1)] : [];
+      if (this.trackIndex < last) this._passedPath.push(position);
+      this._renderIndex = this.trackIndex;
+    } else if (this.trackIndex < last) {
+      this._passedPath[this._passedPath.length - 1] = position;
+      this._remainingPath[0] = position;
+    }
+    // Leaflet still owns path conversion and bounds updates; no private
+    // Leaflet renderer fields or application-specific layers are modified.
     if (this.walkedDistance >= distance) {
       this.notPassedLine.setLatLngs([]);
     } else {
-      let sliced = turf.lineSliceAlong(this.track, this.walkedDistance);
-      this.notPassedLine.setLatLngs(
-        sliced.geometry.coordinates.map(([lng, lat]) => [lat, lng])
-      );
+      this.notPassedLine.setLatLngs(this._remainingPath);
     }
     //计算已经过的路径
     if (this.walkedDistance > 0) {
-      let sliced = turf.lineSliceAlong(this.track, 0, this.walkedDistance);
-      this.passedLine.setLatLngs(
-        sliced.geometry.coordinates.map(([lng, lat]) => [lat, lng])
-      );
+      this.passedLine.setLatLngs(this._passedPath);
     } else {
       this.passedLine.setLatLngs([]);
     }
 
-    //修改箭头线使他和轨迹契合
-    this.polylineDecorator.setPaths([
-      ...this.passedLine.getLatLngs(),
-      ...this.notPassedLine.getLatLngs(),
-    ]);
+    // The route itself is unchanged during playback. The decorator already
+    // listens for map changes; rebuilding all arrow layers per frame is wasteful.
     //计算marker旋转角度
-    if (this.walkedDistance < distance) {
+    if (this.trackIndex < last && this.walkedDistance < distance) {
       if (this.options.markerRotation && this.marker) {
         //计算当前点位到下一个点位的角度
         let bearing = 0;
@@ -227,7 +240,7 @@ L.TrackPlayer = class {
       }
     }
     //更新播放进度
-    this.options.progress = Math.min(1, this.walkedDistance / distance);
+    this.options.progress = distance > 0 ? Math.min(1, this.walkedDistance / distance) : 1;
     this.listenedEvents.progressCallback.forEach((item) =>
       item(
         this.options.progress,
